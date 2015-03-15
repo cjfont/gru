@@ -32,7 +32,7 @@ switch (args[0]) {
         
 }
 
-// clone repo; return manifest and repo name
+// clone repo; return repo name, manifest and exclude list
 function clone(clone_args, target_dir, callback) {
     var cwd = target_dir;
     var gru_yml;      
@@ -105,7 +105,7 @@ function clone(clone_args, target_dir, callback) {
                     },
                     // copy files from base repo that are NOT in the derived repo,
                     // then add to .git/info/exclude those that only exist in base repo 
-                    function(repo_name, base_manifest, base_excludes, cb) {                        
+                    function(repo_name, base_manifest, base_excludes, cb) {
                         var base_repo_only = _.difference(base_manifest, manifest); // in base NOT in derived
                         manifest = _.union(manifest, base_manifest);
                         excludes = _.union(excludes, base_repo_only);
@@ -117,7 +117,7 @@ function clone(clone_args, target_dir, callback) {
                 ], cb);
             }, cb);
         },
-        // update locally excluded files in .git/info/excludes
+        // update locally excluded files in .git/info/exclude
         function(cb) {
             var exclude_str = '\n# gru excludes:\n'+excludes.join('\n')+'\n';
             fs.appendFile(path.join(cwd, '.git/info/exclude'), exclude_str, cb);
