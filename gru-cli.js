@@ -16,6 +16,7 @@ var env = process.env;   // environment vars
 switch (args[0]) {
     
     case 'init':
+        exit("'gru init' not yet supported.");
         break;
         
     case 'clone':
@@ -31,11 +32,11 @@ switch (args[0]) {
         
 }
 
-// clone repo; return manifest of tracked files and repo name
+// clone repo; return manifest and repo name
 function clone(clone_args, target_dir, callback) {
     var cwd = target_dir;
     var gru_yml;      
-    var manifest, repo_name;
+    var repo_name, manifest, excludes;
     async.waterfall([
         // perform clone
         function(cb) {
@@ -79,6 +80,7 @@ function clone(clone_args, target_dir, callback) {
         },
         // ensure .gru directory exists
         function(cb) {
+            excludes = [".gru/"];
             fs.ensureDir(path.join(cwd, ".gru"), cb);
         },
         // look for base repos
@@ -94,7 +96,7 @@ function clone(clone_args, target_dir, callback) {
             }
             // merge each base repo
             if (_.isArray(base_repos) && !_.isEmpty(base_repos) > 0) log('Merging base repo(s): ['+base_repos.join(', ')+']');
-            async.each(base_repos, function(repo_url, cb) {
+            async.eachSeries(base_repos, function(repo_url, cb) {
                 var gru_dir = path.join(cwd, '.gru');
                 async.waterfall([
                     // clone base repo
@@ -103,29 +105,26 @@ function clone(clone_args, target_dir, callback) {
                     },
                     // copy files from base repo that are NOT in the derived repo,
                     // then add to .git/info/exclude those that only exist in base repo 
-                    function(base_manifest, repo_name, cb) {
+                    function(repo_name, base_manifest, base_excludes, cb) {                        
                         var base_repo_only = _.difference(base_manifest, manifest); // in base NOT in derived
-                        async.waterfall([
-                            // copy base_repo_only files to derived repo
-                            function(cb) {
-                                async.eachSeries(base_repo_only, function(file, cb) {
-                                    fs.copy(path.join(gru_dir, repo_name, file), path.join(cwd, file), cb);
-                                }, cb);
-                            },
-                            // add .gru dir and base_repo_only files to .git/info/exclude
-                            function(cb) {
-                                var excludes = [".gru/"].concat(base_repo_only)
-                                var exclude_str = '\n# gru excludes:\n'+excludes.join('\n')+'\n';
-                                fs.appendFile(path.join(cwd, '.git/info/exclude'), exclude_str, cb);
-                            }
-                        ], cb);
+                        manifest = _.union(manifest, base_manifest);
+                        excludes = _.union(excludes, base_repo_only);
+                        // copy base_repo_only files to derived repo
+                        async.eachSeries(base_repo_only, function(file, cb) {
+                            fs.copy(path.join(gru_dir, repo_name, file), path.join(cwd, file), cb);
+                        }, cb);
                     }
                 ], cb);
             }, cb);
+        },
+        // update locally excluded files in .git/info/excludes
+        function(cb) {
+            var exclude_str = '\n# gru excludes:\n'+excludes.join('\n')+'\n';
+            fs.appendFile(path.join(cwd, '.git/info/exclude'), exclude_str, cb);
         }
     ], function(err) {
         if (!err || err === 'skip_to_end') {
-            callback(null, manifest, repo_name);
+            callback(null, repo_name, manifest, excludes);
         } else {
             callback(err);
         }
