@@ -103,13 +103,11 @@ function clone(clone_args, target_dir, callback) {
                     function(cb) {
                         clone([repo_url], gru_dir, cb);
                     },
-                    // copy files from base repo that are NOT in the derived repo,
-                    // then add to .git/info/exclude those that only exist in base repo 
+                    // copy files from base repo that are NOT in the derived repo
                     function(repo_name, base_manifest, base_excludes, cb) {
                         var base_repo_only = _.difference(base_manifest, manifest); // in base NOT in derived
                         manifest = _.union(manifest, base_manifest);
                         excludes = _.union(excludes, base_repo_only);
-                        // copy base_repo_only files to derived repo
                         async.eachSeries(base_repo_only, function(file, cb) {
                             fs.copy(path.join(gru_dir, repo_name, file), path.join(cwd, file), cb);
                         }, cb);
