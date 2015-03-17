@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 var assert = require('assert');
 var child_process = require('child_process');
 var path = require('path');

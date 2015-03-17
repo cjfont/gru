@@ -16,7 +16,10 @@ Submodules are the appropriate tool to use when the other repository you're refe
 - Aggregating scattered repositories of config or data files to facilitate editing and testing.
 
 ## Installation
-Better installation instructions to follow — for now just clone the project somewhere, edit the ```scripts/gru``` script to reflect the gru project folder location, and then create a symbolic link pointing to it and put the link in ```/usr/bin``` or somewhere that is defined in your ```$PATH```.
+Make sure you have [NPM](https://www.npmjs.com) installed, then run:
+```
+npm install -g gru
+```
 
 ## Usage
 ```
