@@ -1,9 +1,9 @@
 ## What is gru?
-Gru (Git Repo Unifier) is a tool that offers a flexible solution to having a project's codebase distributed across multiple git repositories.  It allows you to clone one repo and have the contents of another repo automatically merged in, but excluded from the first repo's index of tracked files.  This in turn allows a project's entire codebase to be pulled in from different repos and set up for development while *constricting* git to only see files/directories from one repo at a time.  Gru can be used as a drop-in replacement for all git commands, since all parameters passed to gru are proxied through to git itself — it does all its work by adding side effects to some of the common git commands.  This behavior is controlled in the ```gru.yml``` config file, which gru will look for and parse in each repo it handles.
+Gru (Git Repo Unifier) is a tool that offers a flexible solution to having a project's codebase distributed across multiple git repositories.  It allows you to clone one repo and have the contents of another repo automatically merged in, but excluded from the first repo's index of tracked files.  This in turn allows a project's entire codebase to be pulled in from different repos and set up for development while *constricting* git to only see files/directories from one repo at a time.  Gru can be used as a drop-in replacement for all git commands, since all parameters passed to gru are proxied through to git itself — it does all its work by adding side effects to some of the common git commands.  This behavior is controlled in the `gru.yml` config file, which gru will look for and parse in each repo it handles.
 
-The relationship between repos is defined by saying that the *derived* repo *inherits* content from one or more *base* repos; this concept of [inheritance](http://en.wikipedia.org/wiki/Inheritance_%28object-oriented_programming%29#Types_of_inheritance) is borrowed from object-oriented programming.  By including a ```gru.yml``` config file at the root of the repo, you can define one or more repos whose files you want to essentially treat as part of the project on your local copy.  Within the config file, gru expects the property ```derives-from``` to be an array of the sources the repo will inherit from.
+The relationship between repos is established by saying that the *derived* repo *inherits* content from one or more *base* repos; this concept of [inheritance](http://en.wikipedia.org/wiki/Inheritance_%28object-oriented_programming%29#Types_of_inheritance) is borrowed from object-oriented programming.  By including a `gru.yml` config file at the root of the repo, you can define one or more repos whose files you want essentially treated as part of the project on your local copy.  Within the config file, gru expects the property `derives-from` to be an array of the sources the repo will inherit from.
 
-The command ```gru clone <repo>``` will first run ```git clone``` to do the respective clone, and then it will look for the ```gru.yml``` file and recursively clone each referenced repo, and then copy its file structure to the derived repo.  Each file that is copied to the derived repo is also added to its ```.git/info/exclude``` file which behaves like ```.gitignore``` but is kept on the local repo only.
+The command `gru clone <repo>` will first run the usual `git clone` command to do the respective clone, then it will look for the `gru.yml` file and recursively clone any repo it lists under `derives-from`, after which it will copy its file structure to the derived repo.  Each file that is copied to the derived repo is also added to git's `.git/info/exclude` file which behaves exactly like `.gitignore` but whose rules are only applicable to the local repo.
 
 #### Why not simply use submodules?
 Git's [submodules](http://git-scm.com/book/en/v2/Git-Tools-Submodules) allow a project to reference other git repositories as sources to be included in the current repository, and similarly can recursively clone all dependent submodules into the project.
@@ -22,17 +22,26 @@ npm install -g gru
 ```
 
 ## Usage
+
+To clone a repo that contains a `gru.yml` file:
 ```
 gru clone <repo>
+```
+Example `gru.yml` file:
+```
+derives-from:
+  - https://github.com/user/first-base-repo
+  - https://github.com/user/another-base-repo
 ```
 More commands/options to follow...
 
 Note that this project is still in the early stages of development and should not be used to blindly deploy code to production.
 
-####TODO####
+#### TODO
 - Add tests
-- Support ```gru init```
-- Allow base repos to be selected for modification, swapping out ```.git``` directories and updating excludes accordingly.
+- Support `gru init`
+- Allow base repos to be selected for modification, swapping out `.git` directories and updating excludes accordingly.
 - Show security notifications and confirmations for "risky" operations:
   + On commit or status, optionally notify when changes are made to untracked files (belonging to other repos not currently selected for modification)
   + Add option to force user confirmation of any change made to any base repo, to prevent accidentally committing sensitive information to the wrong repo.
+- Add options for deployment
