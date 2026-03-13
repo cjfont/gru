@@ -1,151 +1,118 @@
 #!/usr/bin/env node
 
 'use strict';
-var childProcess = require('child_process');
-var path = require('path');
 
-var async = require('async');
-var fs = require('fs-extra');
-var minimist = require('minimist');
-var yaml = require('js-yaml');
-var _ = require('lodash');
+const childProcess = require('child_process');
+const path = require('path');
+const { promisify } = require('util');
 
-var args = process.argv.slice(2);
+const fs = require('fs-extra');
+const minimist = require('minimist');
+const yaml = require('js-yaml');
 
-var cwd = process.cwd(); // current working directory
-var env = process.env;   // environment vars
+const execAsync = promisify(childProcess.exec);
 
-switch (args[0]) {
+const cwd = process.cwd();
+const env = process.env;
+const args = process.argv.slice(2);
 
-  case 'init':
-    exit("'gru init' not yet supported.");
-    break;
+async function main() {
+  switch (args[0]) {
 
-  case 'clone':
-    if (args.length < 2) exit('clone: no repository specified.');
-    var cloneOpts = minimist(args.slice(1));
-    var targetDir = cloneOpts._[1] ? path.relative(cwd, cloneOpts._[1]) : cwd;
-    clone(args.slice(1), targetDir, exit);
-    break;
+    case 'init':
+      exit("'gru init' not yet supported.");
+      break;
 
-  default: // pass-thru command to git
-    exec('git ' + args.join(' '), cwd, exit);
-    break;
+    case 'clone': {
+      if (args.length < 2) exit('clone: no repository specified.');
+      const cloneOpts = minimist(args.slice(1));
+      const targetDir = cloneOpts._[1] ? path.relative(cwd, cloneOpts._[1]) : cwd;
+      await clone(args.slice(1), targetDir);
+      break;
+    }
 
+    default: // pass-thru command to git
+      await exec('git ' + args.join(' '), cwd);
+      break;
+
+  }
 }
 
-// clone repo; return repo name, manifest and exclude list
-function clone(cloneArgs, targetDir, callback) {
-  var cwd = targetDir;
-  var gruConf;
-  var repoName, manifest, excludes;
-  async.waterfall([
-    // perform clone
-    function(cb) {
-      exec('git clone ' + cloneArgs.join(' '), cwd, function(err, output) {
-        if (err) return cb(err);
-        var matches = output.match(/Cloning into '([^']+)'/);
-        if (matches && matches[1]) {
-          cwd = path.join(targetDir, matches[1]);
-          repoName = matches[1];
-          cb();
-        } else {
-          cb(new Error('Could not get repo name'));
-        }
-      });
-    },
-    // get repo manifest
-    function(cb) {
-      exec('git ls-files', cwd, function(err, output) {
-        if (err) return cb(err);
-        manifest = output.trim().split('\n');
-        cb();
-      });
-    },
-    // look for and load gru.yml
-    function(cb) {
-      fs.readFile(path.join(cwd, 'gru.yml'), function(err, data) {
-        if (!err) {
-          log("Found 'gru.yml'");
-          try {
-            gruConf = yaml.safeLoad(data);
-            return cb();
-          } catch (e) {
-            return cb(e); // YAML parse error
-          }
-        } else if (err.code === 'ENOENT') {
-          cb('skip_to_end'); // no gru.yml file exists in repo; we're done
-        } else {
-          cb(err);
-        }
-      });
-    },
-    // ensure .gru directory exists
-    function(cb) {
-      excludes = ['.gru/'];
-      fs.ensureDir(path.join(cwd, '.gru'), cb);
-    },
-    // look for base repos
-    function(gruDir, cb) {
-      var baseRepos;
-      // interpret 'derives-from' property
-      if (Array.isArray(gruConf['derives-from'])) {
-        baseRepos = gruConf['derives-from'];
-      } else if (typeof gruConf['derives-from'] == 'string') {
-        baseRepos = [gruConf['derives-from']];
-      } else {
-        return cb(new Error("'derives-from' property in 'gru.yml' must be a string or array"));
-      }
-      // merge each base repo
-      if (_.isArray(baseRepos) && !_.isEmpty(baseRepos) > 0) log('Merging base repo(s): [' + baseRepos.join(', ') + ']');
-      async.eachSeries(baseRepos, function(repoUrl, cb) {
-        var gruDir = path.join(cwd, '.gru');
-        async.waterfall([
-          // clone base repo
-          function(cb) {
-            clone([repoUrl], gruDir, cb);
-          },
-          // copy files from base repo that are NOT in the derived repo
-          function(repoName, baseManifest, baseExcludes, cb) {
-            var baseRepoOnly = _.difference(baseManifest, manifest); // in base NOT in derived
-            manifest = _.union(manifest, baseManifest);
-            excludes = _.union(excludes, baseRepoOnly);
-            async.eachSeries(baseRepoOnly, function(file, cb) {
-              fs.copy(path.join(gruDir, repoName, file), path.join(cwd, file), cb);
-            }, cb);
-          }
-        ], cb);
-      }, cb);
-    },
-    // update locally excluded files in .git/info/exclude
-    function(cb) {
-      var excludeStr = '\n# gru excludes:\n' + excludes.join('\n') + '\n';
-      fs.appendFile(path.join(cwd, '.git/info/exclude'), excludeStr, cb);
+// Clone repo; return repo name, manifest, and exclude list
+async function clone(cloneArgs, targetDir) {
+  let dir = targetDir;
+
+  // Perform clone
+  const cloneOutput = await exec('git clone ' + cloneArgs.join(' '), dir);
+  const matches = cloneOutput.match(/Cloning into '([^']+)'/);
+  if (!matches || !matches[1]) throw new Error('Could not get repo name');
+  const repoName = matches[1];
+  dir = path.join(targetDir, repoName);
+
+  // Get repo manifest
+  const lsOutput = await exec('git ls-files', dir);
+  let manifest = lsOutput.trim().split('\n').filter(Boolean);
+
+  // Look for and load gru.yml
+  let gruConf;
+  try {
+    const data = await fs.readFile(path.join(dir, 'gru.yml'));
+    log("Found 'gru.yml'");
+    gruConf = yaml.load(data);
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      return { repoName, manifest, excludes: [] };
     }
-  ], function(err) {
-    if (!err || err === 'skip_to_end') {
-      callback(null, repoName, manifest, excludes);
-    } else {
-      callback(err);
+    throw err;
+  }
+
+  // Ensure .gru directory exists
+  let excludes = ['.gru/'];
+  const gruDir = path.join(dir, '.gru');
+  await fs.ensureDir(gruDir);
+
+  // Interpret derives-from property
+  let baseRepos;
+  if (Array.isArray(gruConf['derives-from'])) {
+    baseRepos = gruConf['derives-from'];
+  } else if (typeof gruConf['derives-from'] === 'string') {
+    baseRepos = [gruConf['derives-from']];
+  } else {
+    throw new Error("'derives-from' property in 'gru.yml' must be a string or array");
+  }
+
+  if (baseRepos.length > 0) {
+    log('Merging base repo(s): [' + baseRepos.join(', ') + ']');
+  }
+
+  // Merge each base repo
+  for (const repoUrl of baseRepos) {
+    const { repoName: baseName, manifest: baseManifest } = await clone([repoUrl], gruDir);
+    const baseOnly = baseManifest.filter(f => !manifest.includes(f));
+    manifest = [...new Set([...manifest, ...baseManifest])];
+    excludes = [...new Set([...excludes, ...baseOnly])];
+    for (const file of baseOnly) {
+      await fs.copy(path.join(gruDir, baseName, file), path.join(dir, file));
     }
-  });
+  }
+
+  // Update locally excluded files in .git/info/exclude
+  const excludeStr = '\n# gru excludes:\n' + excludes.join('\n') + '\n';
+  await fs.appendFile(path.join(dir, '.git/info/exclude'), excludeStr);
+
+  return { repoName, manifest, excludes };
 }
 
 function log(msg) {
   process.stdout.write('[gru]: ' + msg + '\n');
 }
 
-function exec(command, cwd, callback) {
+async function exec(command, dir) {
   process.stdout.write('[cmd]: ' + command + '\n');
-  childProcess.exec(command, {cwd: cwd, env: env}, function(err, stdout, stderr) {
-    if (err) {
-      process.stderr.write(stderr);
-      return exit(err);
-    }
-    var output = stdout.toString() + '\n' + stderr.toString();
-    process.stdout.write('[git]: ' + output.trim().replace(new RegExp('\\n', 'g'), '\n[git]: ') + '\n');
-    callback(null, output);
-  });
+  const { stdout, stderr } = await execAsync(command, { cwd: dir, env });
+  const output = stdout + '\n' + stderr;
+  process.stdout.write('[git]: ' + output.trim().replace(/\n/g, '\n[git]: ') + '\n');
+  return output;
 }
 
 function exit(err) {
@@ -153,6 +120,8 @@ function exit(err) {
     process.stdout.write('[gru]: ' + err.toString() + '\n');
     process.exit(err.code || 1);
   } else {
-    process.exit();
+    process.exit(0);
   }
 }
+
+main().catch(exit);
