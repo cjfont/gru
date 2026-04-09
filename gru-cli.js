@@ -1,151 +1,97 @@
 #!/usr/bin/env node
 
 'use strict';
-var childProcess = require('child_process');
-var path = require('path');
 
-var async = require('async');
-var fs = require('fs-extra');
-var minimist = require('minimist');
-var yaml = require('js-yaml');
-var _ = require('lodash');
+const path = require('path');
+const minimist = require('minimist');
 
-var args = process.argv.slice(2);
+const { gitPassthrough } = require('./lib/git');
+const { cloneRepo } = require('./lib/clone');
+const { update } = require('./lib/update');
+const { init } = require('./lib/init');
+const { list } = require('./lib/list');
+const { status } = require('./lib/status');
+const { loadState } = require('./lib/state');
+const { hashFile } = require('./lib/update');
 
-var cwd = process.cwd(); // current working directory
-var env = process.env;   // environment vars
+const cwd = process.cwd();
+const rawArgs = process.argv.slice(2);
 
-switch (args[0]) {
+// Parse global flags
+const parsed = minimist(rawArgs, { boolean: ['verbose', 'quiet', 'v', 'q'] });
+const verbose = parsed.verbose || parsed.v;
+const quiet = parsed.quiet || parsed.q;
 
-  case 'init':
-    exit("'gru init' not yet supported.");
-    break;
+// Strip gru-specific global flags before passing through to git
+const GRU_FLAGS = new Set(['--verbose', '-v', '--quiet', '-q']);
+const args = rawArgs.filter(a => !GRU_FLAGS.has(a));
 
-  case 'clone':
-    if (args.length < 2) exit('clone: no repository specified.');
-    var cloneOpts = minimist(args.slice(1));
-    var targetDir = cloneOpts._[1] ? path.relative(cwd, cloneOpts._[1]) : cwd;
-    clone(args.slice(1), targetDir, exit);
-    break;
+async function main() {
+  switch (args[0]) {
 
-  default: // pass-thru command to git
-    exec('git ' + args.join(' '), cwd, exit);
-    break;
+    case 'init':
+      await init(cwd);
+      break;
 
+    case 'clone': {
+      if (args.length < 2) exit('clone: no repository specified.');
+      const cloneOpts = minimist(args.slice(1));
+      const targetDir = cloneOpts._[1] ? path.relative(cwd, cloneOpts._[1]) : cwd;
+      await cloneRepo(args.slice(1), targetDir, { verbose, quiet });
+      break;
+    }
+
+    case 'update':
+      await update(cwd, { verbose, quiet });
+      break;
+
+    case 'list':
+      await list(cwd);
+      break;
+
+    case 'status':
+      await status(cwd, args.slice(1));
+      break;
+
+    case 'commit':
+      await warnBaseRepoModifications(cwd);
+      await gitPassthrough(['commit', ...args.slice(1)], cwd);
+      break;
+
+    default: // pass-through to git
+      await gitPassthrough(args, cwd);
+      break;
+
+  }
 }
 
-// clone repo; return repo name, manifest and exclude list
-function clone(cloneArgs, targetDir, callback) {
-  var cwd = targetDir;
-  var gruConf;
-  var repoName, manifest, excludes;
-  async.waterfall([
-    // perform clone
-    function(cb) {
-      exec('git clone ' + cloneArgs.join(' '), cwd, function(err, output) {
-        if (err) return cb(err);
-        var matches = output.match(/Cloning into '([^']+)'/);
-        if (matches && matches[1]) {
-          cwd = path.join(targetDir, matches[1]);
-          repoName = matches[1];
-          cb();
-        } else {
-          cb(new Error('Could not get repo name'));
-        }
-      });
-    },
-    // get repo manifest
-    function(cb) {
-      exec('git ls-files', cwd, function(err, output) {
-        if (err) return cb(err);
-        manifest = output.trim().split('\n');
-        cb();
-      });
-    },
-    // look for and load gru.yml
-    function(cb) {
-      fs.readFile(path.join(cwd, 'gru.yml'), function(err, data) {
-        if (!err) {
-          log("Found 'gru.yml'");
-          try {
-            gruConf = yaml.safeLoad(data);
-            return cb();
-          } catch (e) {
-            return cb(e); // YAML parse error
-          }
-        } else if (err.code === 'ENOENT') {
-          cb('skip_to_end'); // no gru.yml file exists in repo; we're done
-        } else {
-          cb(err);
-        }
-      });
-    },
-    // ensure .gru directory exists
-    function(cb) {
-      excludes = ['.gru/'];
-      fs.ensureDir(path.join(cwd, '.gru'), cb);
-    },
-    // look for base repos
-    function(gruDir, cb) {
-      var baseRepos;
-      // interpret 'derives-from' property
-      if (Array.isArray(gruConf['derives-from'])) {
-        baseRepos = gruConf['derives-from'];
-      } else if (typeof gruConf['derives-from'] == 'string') {
-        baseRepos = [gruConf['derives-from']];
-      } else {
-        return cb(new Error("'derives-from' property in 'gru.yml' must be a string or array"));
-      }
-      // merge each base repo
-      if (_.isArray(baseRepos) && !_.isEmpty(baseRepos) > 0) log('Merging base repo(s): [' + baseRepos.join(', ') + ']');
-      async.eachSeries(baseRepos, function(repoUrl, cb) {
-        var gruDir = path.join(cwd, '.gru');
-        async.waterfall([
-          // clone base repo
-          function(cb) {
-            clone([repoUrl], gruDir, cb);
-          },
-          // copy files from base repo that are NOT in the derived repo
-          function(repoName, baseManifest, baseExcludes, cb) {
-            var baseRepoOnly = _.difference(baseManifest, manifest); // in base NOT in derived
-            manifest = _.union(manifest, baseManifest);
-            excludes = _.union(excludes, baseRepoOnly);
-            async.eachSeries(baseRepoOnly, function(file, cb) {
-              fs.copy(path.join(gruDir, repoName, file), path.join(cwd, file), cb);
-            }, cb);
-          }
-        ], cb);
-      }, cb);
-    },
-    // update locally excluded files in .git/info/exclude
-    function(cb) {
-      var excludeStr = '\n# gru excludes:\n' + excludes.join('\n') + '\n';
-      fs.appendFile(path.join(cwd, '.git/info/exclude'), excludeStr, cb);
-    }
-  ], function(err) {
-    if (!err || err === 'skip_to_end') {
-      callback(null, repoName, manifest, excludes);
-    } else {
-      callback(err);
-    }
-  });
-}
+// Before committing, warn if any base repo files have been locally modified.
+// They are git-excluded and won't be included in the commit, so this is purely informational.
+async function warnBaseRepoModifications(dir) {
+  const state = await loadState(dir);
+  if (!state.baseRepos || state.baseRepos.length === 0) return;
 
-function log(msg) {
-  process.stdout.write('[gru]: ' + msg + '\n');
-}
-
-function exec(command, cwd, callback) {
-  process.stdout.write('[cmd]: ' + command + '\n');
-  childProcess.exec(command, {cwd: cwd, env: env}, function(err, stdout, stderr) {
-    if (err) {
-      process.stderr.write(stderr);
-      return exit(err);
+  const modified = [];
+  for (const repo of state.baseRepos) {
+    for (const file of (repo.files || [])) {
+      try {
+        const [wHash, gHash] = await Promise.all([
+          hashFile(path.join(dir, file)),
+          hashFile(path.join(dir, '.gru', repo.name, file)),
+        ]);
+        if (wHash !== gHash) modified.push({ file, repo: repo.url });
+      } catch {}
     }
-    var output = stdout.toString() + '\n' + stderr.toString();
-    process.stdout.write('[git]: ' + output.trim().replace(new RegExp('\\n', 'g'), '\n[git]: ') + '\n');
-    callback(null, output);
-  });
+  }
+
+  if (modified.length > 0) {
+    process.stdout.write('\n[gru]: Warning: the following base repo files have local modifications:\n');
+    for (const { file, repo } of modified) {
+      process.stdout.write(`  ${file}  [from: ${repo}]\n`);
+    }
+    process.stdout.write('[gru]: These files are git-excluded and will NOT be included in this commit.\n');
+    process.stdout.write('[gru]: Use `gru list` to see which repos own these files.\n\n');
+  }
 }
 
 function exit(err) {
@@ -153,6 +99,8 @@ function exit(err) {
     process.stdout.write('[gru]: ' + err.toString() + '\n');
     process.exit(err.code || 1);
   } else {
-    process.exit();
+    process.exit(0);
   }
 }
+
+main().catch(exit);
